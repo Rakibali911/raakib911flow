@@ -1,11 +1,10 @@
 import os
 import math
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from flask import Flask, jsonify, request, render_template
-import yfinance as yf
+from curl_cffi import requests as creq
 import pytz
-from curl_cffi import requests as curl_requests
 
 app = Flask(__name__)
 
@@ -13,14 +12,11 @@ IST = pytz.timezone('Asia/Kolkata')
 RISK_FREE_RATE = 0.05
 CONTRACT_SIZE = 100
 
-TICKERS = {
-    "SPY": "SPY",
-    "QQQ": "QQQ",
-    "GLD": "GLD"
-}
+TICKERS = ["SPY", "QQQ", "GLD"]
 
 _cache = {}
 CACHE_TTL = 25  # seconds
+CRUMB_TTL = 900  # 15 min
 
 def cache_get(key):
     item = _cache.get(key)
@@ -32,9 +28,52 @@ def cache_set(key, value):
     _cache[key] = (time.time(), value)
 
 
-def get_session():
-    # Impersonate a real Chrome browser so Yahoo Finance doesn't block cloud server requests
-    return curl_requests.Session(impersonate="chrome110")
+# ---------- Session + crumb handling (Yahoo requires this to allow requests) ----------
+_session_holder = {"session": None, "crumb": None, "crumb_time": 0}
+
+def get_session_and_crumb():
+    now = time.time()
+    if _session_holder["session"] is not None and (now - _session_holder["crumb_time"] < CRUMB_TTL):
+        return _session_holder["session"], _session_holder["crumb"]
+
+    session = creq.Session(impersonate="chrome110")
+    crumb = None
+    try:
+        session.get("https://fc.yahoo.com", timeout=10)
+    except Exception as e:
+        print(f"cookie warm-up failed: {e}")
+    try:
+        r = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        if r.status_code == 200 and r.text and "<html" not in r.text.lower():
+            crumb = r.text.strip()
+    except Exception as e:
+        print(f"crumb fetch failed: {e}")
+
+    _session_holder["session"] = session
+    _session_holder["crumb"] = crumb
+    _session_holder["crumb_time"] = now
+    return session, crumb
+
+
+def yahoo_get(url, params=None):
+    session, crumb = get_session_and_crumb()
+    p = dict(params or {})
+    if crumb:
+        p["crumb"] = crumb
+    try:
+        r = session.get(url, params=p, timeout=15)
+        if r.status_code != 200:
+            # crumb/cookie might have expired, force refresh once
+            _session_holder["session"] = None
+            session, crumb = get_session_and_crumb()
+            p2 = dict(params or {})
+            if crumb:
+                p2["crumb"] = crumb
+            r = session.get(url, params=p2, timeout=15)
+        return r.json()
+    except Exception as e:
+        print(f"yahoo_get error for {url}: {e}")
+        return None
 
 
 # ---------- Pure python Black-Scholes (no scipy) ----------
@@ -65,18 +104,33 @@ def get_spot_price(ticker):
         return cached
     price = 0.0
     try:
-        session = get_session()
-        t = yf.Ticker(ticker, session=session)
-        hist = t.history(period="1d")
-        if not hist.empty:
-            price = float(hist["Close"].iloc[-1])
-        else:
-            fi = t.fast_info
-            price = float(fi["last_price"])
+        data = yahoo_get(f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}")
+        price = float(data["chart"]["result"][0]["meta"]["regularMarketPrice"])
     except Exception as e:
         print(f"spot price error for {ticker}: {e}")
     cache_set(key, price)
     return price
+
+
+def get_raw_expiries(ticker):
+    try:
+        data = yahoo_get(f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}")
+        result = data["optionChain"]["result"][0]
+        return result.get("expirationDates", [])
+    except Exception as e:
+        print(f"expiries error for {ticker}: {e}")
+        return []
+
+
+def get_option_chain_for_date(ticker, unix_ts):
+    try:
+        data = yahoo_get(f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}", {"date": unix_ts})
+        result = data["optionChain"]["result"][0]
+        opt = result["options"][0]
+        return opt.get("calls", []), opt.get("puts", [])
+    except Exception as e:
+        print(f"chain error for {ticker} {unix_ts}: {e}")
+        return [], []
 
 
 @app.route("/")
@@ -100,33 +154,23 @@ def api_expiries():
     if cached is not None:
         return jsonify(cached)
 
-    try:
-        session = get_session()
-        t = yf.Ticker(ticker, session=session)
-        all_expiries = t.options
-    except Exception as e:
-        print(f"expiries error for {ticker}: {e}")
+    raw_dates = get_raw_expiries(ticker)
+    if not raw_dates:
         return jsonify({"expiries": [], "error": "Could not fetch expiries"})
 
     today = datetime.now(IST).date()
     result = []
-    for exp_str in all_expiries:
-        exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+    for unix_ts in raw_dates:
+        exp_date = datetime.fromtimestamp(unix_ts, tz=timezone.utc).astimezone(IST).date()
         dte = (exp_date - today).days
         if dte < 0 or dte > 60:
             continue
-        oi_total = 0
-        try:
-            chain = t.option_chain(exp_str)
-            oi_total = int(chain.calls["openInterest"].fillna(0).sum() +
-                            chain.puts["openInterest"].fillna(0).sum())
-        except Exception as e:
-            print(f"chain error for {ticker} {exp_str}: {e}")
-            oi_total = 0
+        calls, puts = get_option_chain_for_date(ticker, unix_ts)
+        oi_total = sum(c.get("openInterest", 0) or 0 for c in calls) + sum(p.get("openInterest", 0) or 0 for p in puts)
         result.append({
             "dte": dte,
             "date": exp_date.strftime("%b %d"),
-            "expiry": exp_str,
+            "expiry": str(unix_ts),
             "oi": oi_total
         })
 
@@ -150,25 +194,23 @@ def api_gex():
         return jsonify({"error": "Could not fetch live spot price. Try again."}), 400
 
     today = datetime.now(IST).date()
-
-    session = get_session()
-    t = yf.Ticker(ticker, session=session)
     strike_map = {}
 
-    for exp_str in selected_expiries:
+    for unix_str in selected_expiries:
         try:
-            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            unix_ts = int(unix_str)
+            exp_date = datetime.fromtimestamp(unix_ts, tz=timezone.utc).astimezone(IST).date()
             T = max((exp_date - today).days, 0) / 365.0
-            chain = t.option_chain(exp_str)
+            calls, puts = get_option_chain_for_date(ticker, unix_ts)
         except Exception as e:
-            print(f"gex chain error for {ticker} {exp_str}: {e}")
+            print(f"gex chain error for {ticker} {unix_str}: {e}")
             continue
 
-        for _, row in chain.calls.iterrows():
-            K = float(row["strike"])
-            oi = float(row["openInterest"]) if not math.isnan(row["openInterest"]) else 0
-            iv = float(row["impliedVolatility"]) if not math.isnan(row["impliedVolatility"]) else 0.25
-            if oi <= 0:
+        for row in calls:
+            K = float(row.get("strike", 0))
+            oi = float(row.get("openInterest", 0) or 0)
+            iv = float(row.get("impliedVolatility", 0.25) or 0.25)
+            if oi <= 0 or K <= 0:
                 continue
             delta, gamma = bs_delta_gamma(spot, K, T, RISK_FREE_RATE, iv, "call")
             gex = gamma * oi * CONTRACT_SIZE * spot * spot * 0.01
@@ -178,11 +220,11 @@ def api_gex():
             s["dex"] += dex
             s["call_gex"] += gex
 
-        for _, row in chain.puts.iterrows():
-            K = float(row["strike"])
-            oi = float(row["openInterest"]) if not math.isnan(row["openInterest"]) else 0
-            iv = float(row["impliedVolatility"]) if not math.isnan(row["impliedVolatility"]) else 0.25
-            if oi <= 0:
+        for row in puts:
+            K = float(row.get("strike", 0))
+            oi = float(row.get("openInterest", 0) or 0)
+            iv = float(row.get("impliedVolatility", 0.25) or 0.25)
+            if oi <= 0 or K <= 0:
                 continue
             delta, gamma = bs_delta_gamma(spot, K, T, RISK_FREE_RATE, iv, "put")
             gex = -1 * gamma * oi * CONTRACT_SIZE * spot * spot * 0.01
