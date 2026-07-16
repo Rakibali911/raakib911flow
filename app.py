@@ -15,8 +15,8 @@ CONTRACT_SIZE = 100
 TICKERS = ["SPY", "QQQ", "GLD"]
 
 _cache = {}
-CACHE_TTL = 25  # seconds
-CRUMB_TTL = 900  # 15 min
+CACHE_TTL = 25
+CRUMB_TTL = 900
 
 def cache_get(key):
     item = _cache.get(key)
@@ -28,22 +28,23 @@ def cache_set(key, value):
     _cache[key] = (time.time(), value)
 
 
-# ---------- Session + crumb handling (Yahoo requires this to allow requests) ----------
 _session_holder = {"session": None, "crumb": None, "crumb_time": 0}
 
-def get_session_and_crumb():
+def get_session_and_crumb(force=False):
     now = time.time()
-    if _session_holder["session"] is not None and (now - _session_holder["crumb_time"] < CRUMB_TTL):
+    if not force and _session_holder["session"] is not None and (now - _session_holder["crumb_time"] < CRUMB_TTL):
         return _session_holder["session"], _session_holder["crumb"]
 
     session = creq.Session(impersonate="chrome110")
     crumb = None
     try:
-        session.get("https://fc.yahoo.com", timeout=10)
+        r0 = session.get("https://fc.yahoo.com", timeout=10)
+        print(f"[warmup] fc.yahoo.com status={r0.status_code}")
     except Exception as e:
         print(f"cookie warm-up failed: {e}")
     try:
         r = session.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        print(f"[crumb] status={r.status_code} body={r.text[:200]!r}")
         if r.status_code == 200 and r.text and "<html" not in r.text.lower():
             crumb = r.text.strip()
     except Exception as e:
@@ -55,7 +56,7 @@ def get_session_and_crumb():
     return session, crumb
 
 
-def yahoo_get(url, params=None):
+def yahoo_get(url, params=None, retry=True):
     session, crumb = get_session_and_crumb()
     p = dict(params or {})
     if crumb:
@@ -63,20 +64,20 @@ def yahoo_get(url, params=None):
     try:
         r = session.get(url, params=p, timeout=15)
         if r.status_code != 200:
-            # crumb/cookie might have expired, force refresh once
-            _session_holder["session"] = None
-            session, crumb = get_session_and_crumb()
-            p2 = dict(params or {})
-            if crumb:
-                p2["crumb"] = crumb
-            r = session.get(url, params=p2, timeout=15)
+            print(f"[yahoo_get] {url} status={r.status_code} body={r.text[:300]!r}")
+            if retry:
+                session, crumb = get_session_and_crumb(force=True)
+                p2 = dict(params or {})
+                if crumb:
+                    p2["crumb"] = crumb
+                r = session.get(url, params=p2, timeout=15)
+                print(f"[yahoo_get retry] {url} status={r.status_code} body={r.text[:300]!r}")
         return r.json()
     except Exception as e:
         print(f"yahoo_get error for {url}: {e}")
         return None
 
 
-# ---------- Pure python Black-Scholes (no scipy) ----------
 def norm_pdf(x):
     return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x)
 
@@ -115,6 +116,12 @@ def get_spot_price(ticker):
 def get_raw_expiries(ticker):
     try:
         data = yahoo_get(f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}")
+        if data is None:
+            print(f"expiries: no data returned for {ticker}")
+            return []
+        if "optionChain" not in data:
+            print(f"expiries: unexpected response for {ticker}: {str(data)[:400]}")
+            return []
         result = data["optionChain"]["result"][0]
         return result.get("expirationDates", [])
     except Exception as e:
@@ -125,6 +132,9 @@ def get_raw_expiries(ticker):
 def get_option_chain_for_date(ticker, unix_ts):
     try:
         data = yahoo_get(f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}", {"date": unix_ts})
+        if data is None or "optionChain" not in data:
+            print(f"chain: unexpected response for {ticker} {unix_ts}: {str(data)[:400]}")
+            return [], []
         result = data["optionChain"]["result"][0]
         opt = result["options"][0]
         return opt.get("calls", []), opt.get("puts", [])
