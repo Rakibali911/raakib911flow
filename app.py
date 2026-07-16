@@ -174,7 +174,7 @@ def api_expiries():
     for unix_ts in raw_dates:
         exp_date = datetime.fromtimestamp(unix_ts, tz=timezone.utc).astimezone(IST).date()
         dte = (exp_date - today).days
-        if dte < 0 or dte > 60:
+        if dte < 0 or dte > 365:
             continue
         calls, puts = get_option_chain_for_date(ticker, unix_ts)
         oi_total = sum(c.get("openInterest", 0) or 0 for c in calls) + sum(p.get("openInterest", 0) or 0 for p in puts)
