@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PowerGEX — Live Gamma Exposure</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.32.0/plotly.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <div class="logo">Power<span>GEX</span></div>
+    <div class="navlinks"><span>Home</span><span>Dashboard</span></div>
+  </nav>
+
+  <div class="section-label">Select Ticker</div>
+  <div class="ticker-row" id="tickerRow">
+    <div class="ticker-card active" data-ticker="SPY"><div class="sym">SPY</div><div class="px">--</div></div>
+    <div class="ticker-card" data-ticker="QQQ"><div class="sym">QQQ</div><div class="px">--</div></div>
+    <div class="ticker-card" data-ticker="GLD"><div class="sym">GLD</div><div class="px">--</div></div>
+  </div>
+
+  <div class="controls-row">
+    <div class="dte-btn" id="dteBtn">
+      <span id="dteBtnLabel">DTE · loading...</span>
+      <span class="arrow">▾</span>
+    </div>
+    <button class="refresh-btn-sm" id="refreshBtn">⟳</button>
+    <div class="dte-panel" id="dtePanel">
+      <div id="dteList"><div class="dte-loading">Loading expiries...</div></div>
+      <div class="panel-footer"><button class="done-btn" id="doneBtn">Done</button></div>
+    </div>
+  </div>
+  <div class="ts-line">Last updated <b id="tsVal">--</b></div>
+
+  <div class="insight" id="insightBox">
+    <div class="tag">AI INSIGHT</div>
+    <div class="txt" id="insightTxt">Select DTEs and tap refresh to load live data.</div>
+  </div>
+
+  <div class="stat-strip" id="statStrip">
+    <div class="stat-item"><div class="l">Spot</div><div class="v white" id="statSpot">--</div></div>
+    <div class="stat-item"><div class="l">Call Wall</div><div class="v green" id="statCallWall">--</div></div>
+    <div class="stat-item"><div class="l">Put Wall</div><div class="v red" id="statPutWall">--</div></div>
+    <div class="stat-item"><div class="l">Net GEX</div><div class="v white" id="statNetGex">--</div></div>
+    <div class="stat-item"><div class="l">Net DEX</div><div class="v white" id="statNetDex">--</div></div>
+    <div class="stat-item"><div class="l">Flip Pt</div><div class="v purple" id="statFlip">--</div></div>
+    <div class="stat-item"><div class="l">Max Pain</div><div class="v white" id="statMaxPain">--</div></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head"><h3>Gamma Exposure — Per Strike</h3><div class="legend">Combined</div></div>
+    <div id="gexChart" style="width:100%;height:280px;"></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head"><h3>Delta Exposure — Per Strike</h3><div class="legend">Combined</div></div>
+    <div id="dexChart" style="width:100%;height:260px;"></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head"><h3>Cumulative GEX</h3><div class="legend">Across strikes</div></div>
+    <div id="cumGexChart" style="width:100%;height:200px;"></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head"><h3>Cumulative DEX</h3><div class="legend">Across strikes</div></div>
+    <div id="cumDexChart" style="width:100%;height:200px;"></div>
+  </div>
+
+  <div class="footer-note">PowerGEX · Live data only · Not financial advice</div>
+</div>
+
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
