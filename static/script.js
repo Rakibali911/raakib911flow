@@ -2,14 +2,6 @@ let currentTicker = "SPY";
 let selectedExpiries = [];
 let expiryData = [];
 
-const layoutBase = {
-  paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
-  font:{color:'#8a94a3', size:10}, margin:{l:44,r:10,t:10,b:30},
-  xaxis:{gridcolor:'rgba(255,255,255,0.05)', zeroline:false, title:{text:'Strike', font:{size:9}}},
-  yaxis:{gridcolor:'rgba(255,255,255,0.06)', zeroline:false},
-  showlegend:false, dragmode:'pan'
-};
-
 const plotConfig = {
   displayModeBar: true,
   displaylogo: false,
@@ -21,22 +13,11 @@ const plotConfig = {
 function fmtBig(n) {
   const abs = Math.abs(n);
   let s;
-  if (abs >= 1e9) s = (n/1e9).toFixed(2) + 'B';
-  else if (abs >= 1e6) s = (n/1e6).toFixed(2) + 'M';
-  else if (abs >= 1e3) s = (n/1e3).toFixed(2) + 'K';
+  if (abs >= 1e9) s = (n/1e9).toFixed(2)+'B';
+  else if (abs >= 1e6) s = (n/1e6).toFixed(2)+'M';
+  else if (abs >= 1e3) s = (n/1e3).toFixed(2)+'K';
   else s = n.toFixed(2);
-  return (n >= 0 ? '+' : '') + s;
-}
-
-// Build a layout with x-axis initially zoomed near spot price, but full data still available on zoom-out
-function rangeLayout(spot, extra) {
-  const lo = spot * 0.85;
-  const hi = spot * 1.15;
-  return {
-    ...layoutBase,
-    xaxis: { ...layoutBase.xaxis, range: [lo, hi] },
-    ...extra
-  };
+  return (n >= 0 ? '+' : '')+s;
 }
 
 async function loadQuotes() {
@@ -45,19 +26,18 @@ async function loadQuotes() {
     const data = await res.json();
     document.querySelectorAll('.ticker-card').forEach(card => {
       const sym = card.dataset.ticker;
-      if (data.quotes[sym] !== undefined) {
-        card.querySelector('.px').innerText = '$' + data.quotes[sym];
-      }
+      if (data.quotes[sym] !== undefined)
+        card.querySelector('.px').innerText = '$'+data.quotes[sym];
     });
-  } catch (e) { console.error('quotes failed', e); }
+  } catch(e) { console.error('quotes failed', e); }
 }
 
 async function loadExpiries() {
   const dteListEl = document.getElementById('dteList');
   dteListEl.innerHTML = '<div class="dte-loading">Loading expiries...</div>';
-  document.getElementById('dteBtnLabel').innerText = 'DTE · loading...';
+  document.getElementById('dteBtnLabel').innerText = 'Expiries · loading...';
   try {
-    const res = await fetch('/api/expiries?ticker=' + currentTicker);
+    const res = await fetch('/api/expiries?ticker='+currentTicker);
     const data = await res.json();
     expiryData = data.expiries || [];
     dteListEl.innerHTML = '';
@@ -65,42 +45,43 @@ async function loadExpiries() {
     expiryData.forEach((item, idx) => {
       const row = document.createElement('div');
       const isDefault = idx < 3;
-      row.className = 'dte-row' + (isDefault ? ' checked' : '');
+      row.className = 'dte-row'+(isDefault ? ' checked' : '');
       row.dataset.expiry = item.expiry;
-      row.innerHTML = `<div class="dte-left"><div class="checkbox">${isDefault ? '✓' : ''}</div>
-        <div><div>${item.dte} DTE</div><div class="dte-date">${item.date}</div></div></div>
-        <div class="oi-tag">OI: ${item.oi}</div>`;
+      row.innerHTML = `<div class="dte-left">
+        <div class="checkbox">${isDefault ? '✓' : ''}</div>
+        <div><div style="font-weight:700">${item.date}</div><div class="dte-date">${item.dte} days away</div></div>
+      </div>
+      <div class="oi-tag">OI: ${item.oi.toLocaleString()}</div>`;
       row.addEventListener('click', () => {
         row.classList.toggle('checked');
         row.querySelector('.checkbox').innerText = row.classList.contains('checked') ? '✓' : '';
-        updateDteLabel();
+        updateExpiryLabel();
       });
       dteListEl.appendChild(row);
       if (isDefault) selectedExpiries.push(item.expiry);
     });
-    updateDteLabel();
-  } catch (e) {
+    updateExpiryLabel();
+  } catch(e) {
     dteListEl.innerHTML = '<div class="dte-loading">Failed to load. Tap refresh.</div>';
   }
 }
 
-function updateDteLabel() {
+function updateExpiryLabel() {
   const checked = document.querySelectorAll('.dte-row.checked');
-  document.getElementById('dteBtnLabel').innerText = 'DTE · ' + checked.length + ' selected';
+  document.getElementById('dteBtnLabel').innerText = 'Expiries · '+checked.length+' selected';
   selectedExpiries = Array.from(checked).map(r => r.dataset.expiry);
 }
 
-function insightText(netGex, spot, flip) {
-  if (netGex > 0) {
-    return `Combined <b>Positive Gamma</b> across selected DTEs — dealers likely to suppress volatility. Pinning probable near current levels.`;
-  } else {
-    return `Combined <b>Negative Gamma</b> across selected DTEs — dealers likely amplify moves. Expect higher volatility, especially below flip point ${flip}.`;
-  }
+function insightText(netGex, flip) {
+  if (netGex > 0)
+    return `Combined <b>Positive Gamma</b> across selected expiries — dealers likely to suppress volatility. Pinning probable near current levels.`;
+  else
+    return `Combined <b>Negative Gamma</b> across selected expiries — dealers amplify moves. Expect volatility, especially below flip point <b>${flip}</b>.`;
 }
 
 async function loadGex() {
   if (selectedExpiries.length === 0) {
-    document.getElementById('insightTxt').innerText = 'Select at least one DTE first.';
+    document.getElementById('insightTxt').innerText = 'Select at least one expiry first.';
     return;
   }
   const btn = document.getElementById('refreshBtn');
@@ -115,46 +96,174 @@ async function loadGex() {
       return;
     }
 
+    // Update stat strip
     document.getElementById('tsVal').innerText = data.updated;
     document.getElementById('statSpot').innerText = data.spot;
     document.getElementById('statCallWall').innerText = data.call_wall;
     document.getElementById('statPutWall').innerText = data.put_wall;
     document.getElementById('statNetGex').innerText = fmtBig(data.net_gex);
-    document.getElementById('statNetGex').className = 'v ' + (data.net_gex >= 0 ? 'green' : 'red');
+    document.getElementById('statNetGex').className = 'v '+(data.net_gex >= 0 ? 'green' : 'red');
     document.getElementById('statNetDex').innerText = fmtBig(data.net_dex);
-    document.getElementById('statNetDex').className = 'v ' + (data.net_dex >= 0 ? 'green' : 'red');
+    document.getElementById('statNetDex').className = 'v '+(data.net_dex >= 0 ? 'green' : 'red');
     document.getElementById('statFlip').innerText = data.flip_point;
     document.getElementById('statMaxPain').innerText = data.max_pain;
-    document.getElementById('insightTxt').innerHTML = insightText(data.net_gex, data.spot, data.flip_point);
+    document.getElementById('insightTxt').innerHTML = insightText(data.net_gex, data.flip_point);
 
-    const colors = arr => arr.map(v => v >= 0 ? '#00ffb2' : '#ff4d6d');
     const spot = data.spot;
+    const strikes = data.strikes;
+    const gex = data.gex;
+    const dex = data.dex;
+    const cumGex = data.cumulative_gex.map(p => p.value);
+    const cumDex = data.cumulative_dex.map(p => p.value);
 
-    Plotly.newPlot('gexChart', [{ x:data.strikes, y:data.gex, type:'bar', marker:{color:colors(data.gex)}, width: (spot*0.006) }],
-      rangeLayout(spot, {
-        shapes:[
-          {type:'line', x0:spot, x1:spot, y0:0, y1:1, yref:'paper', line:{color:'#ffffff', width:1.5, dash:'dot'}},
-          {type:'line', x0:data.call_wall, x1:data.call_wall, y0:0, y1:1, yref:'paper', line:{color:'#00ffb2', width:1, dash:'dash'}},
-          {type:'line', x0:data.put_wall, x1:data.put_wall, y0:0, y1:1, yref:'paper', line:{color:'#ff4d6d', width:1, dash:'dash'}}
-        ]
-      }), plotConfig);
+    const gexColors = gex.map(v => v >= 0 ? 'rgba(57,255,20,0.45)' : 'rgba(255,49,49,0.45)');
+    const dexColors = dex.map(v => v >= 0 ? 'rgba(57,255,20,0.45)' : 'rgba(255,49,49,0.45)');
 
-    Plotly.newPlot('dexChart', [{ x:data.strikes, y:data.dex, type:'bar', marker:{color:colors(data.dex)}, width: (spot*0.006) }],
-      rangeLayout(spot, {
-        shapes:[{type:'line', x0:spot, x1:spot, y0:0, y1:1, yref:'paper', line:{color:'#ffffff', width:1.5, dash:'dot'}}]
-      }), plotConfig);
+    // Hover template combining all 4 values
+    const customHover = strikes.map((s,i) =>
+      `<b>Strike ${s}</b><br>`+
+      `GEX: ${fmtBig(gex[i])}<br>`+
+      `Cum GEX: ${fmtBig(cumGex[i])}<br>`+
+      `DEX: ${fmtBig(dex[i])}<br>`+
+      `Cum DEX: ${fmtBig(cumDex[i])}`+
+      `<extra></extra>`
+    );
 
-    const cumGexX = data.cumulative_gex.map(p => p.strike);
-    const cumGexY = data.cumulative_gex.map(p => p.value);
-    Plotly.newPlot('cumGexChart', [{ x:cumGexX, y:cumGexY, type:'scatter', mode:'lines', line:{color:'#00ffb2', width:2}, fill:'tozeroy', fillcolor:'rgba(0,255,178,0.08)' }],
-      rangeLayout(spot), plotConfig);
+    const traces = [
+      // Upper panel: GEX Bars
+      {
+        name: 'GEX',
+        x: strikes, y: gex,
+        type: 'bar',
+        marker: { color: gexColors },
+        yaxis: 'y', xaxis: 'x',
+        hovertemplate: customHover,
+        showlegend: true
+      },
+      // Upper panel: Cumulative GEX line (secondary axis)
+      {
+        name: 'Cum GEX',
+        x: strikes, y: cumGex,
+        type: 'scatter', mode: 'lines',
+        line: { color: '#00FFFF', width: 3, shape: 'spline', smoothing: 0.4 },
+        yaxis: 'y3', xaxis: 'x',
+        hovertemplate: customHover,
+        showlegend: true
+      },
+      // Lower panel: DEX Bars
+      {
+        name: 'DEX',
+        x: strikes, y: dex,
+        type: 'bar',
+        marker: { color: dexColors },
+        yaxis: 'y2', xaxis: 'x',
+        hovertemplate: customHover,
+        showlegend: true
+      },
+      // Lower panel: Cumulative DEX line (secondary axis)
+      {
+        name: 'Cum DEX',
+        x: strikes, y: cumDex,
+        type: 'scatter', mode: 'lines',
+        line: { color: '#FFFF00', width: 3, shape: 'spline', smoothing: 0.4 },
+        yaxis: 'y4', xaxis: 'x',
+        hovertemplate: customHover,
+        showlegend: true
+      }
+    ];
 
-    const cumDexX = data.cumulative_dex.map(p => p.strike);
-    const cumDexY = data.cumulative_dex.map(p => p.value);
-    Plotly.newPlot('cumDexChart', [{ x:cumDexX, y:cumDexY, type:'scatter', mode:'lines', line:{color:'#7c5cff', width:2}, fill:'tozeroy', fillcolor:'rgba(124,92,255,0.08)' }],
-      rangeLayout(spot), plotConfig);
+    const lo = spot * 0.87;
+    const hi = spot * 1.13;
 
-  } catch (e) {
+    const layout = {
+      paper_bgcolor: '#000000',
+      plot_bgcolor: '#000000',
+      height: 650,
+
+      title: {
+        text: `${currentTicker} FLOW ENGINE<br><span style="font-size:9px;color:#888888">Time: ${data.updated} &nbsp;|&nbsp; Spot: ${spot} &nbsp;|&nbsp; Call Wall: ${data.call_wall} &nbsp;|&nbsp; Put Wall: ${data.put_wall}</span>`,
+        font: { size: 13, color: '#ffffff' },
+        x: 0.5, xanchor: 'center'
+      },
+
+      bargap: 0.35,
+
+      // Upper panel Y — GEX bars
+      yaxis: {
+        domain: [0.53, 1.0],
+        showgrid: false,
+        zeroline: true, zerolinecolor: 'rgba(255,255,255,0.12)', zerolinewidth: 1,
+        color: '#555', tickfont: { size: 9, color: '#555' },
+        title: { text: 'GEX', font: { color: '#39FF14', size: 9 } }
+      },
+      // Lower panel Y — DEX bars
+      yaxis2: {
+        domain: [0, 0.47],
+        showgrid: false,
+        zeroline: true, zerolinecolor: 'rgba(255,255,255,0.12)', zerolinewidth: 1,
+        color: '#555', tickfont: { size: 9, color: '#555' },
+        title: { text: 'DEX', font: { color: '#39FF14', size: 9 } }
+      },
+      // Secondary Y — Cum GEX (right, upper)
+      yaxis3: {
+        domain: [0.53, 1.0],
+        overlaying: 'y', side: 'right',
+        showgrid: false, zeroline: false,
+        showticklabels: false, color: '#00FFFF'
+      },
+      // Secondary Y — Cum DEX (right, lower)
+      yaxis4: {
+        domain: [0, 0.47],
+        overlaying: 'y2', side: 'right',
+        showgrid: false, zeroline: false,
+        showticklabels: false, color: '#FFFF00'
+      },
+
+      xaxis: {
+        range: [lo, hi],
+        showgrid: false,
+        color: '#555', tickfont: { size: 9, color: '#888' },
+        tickangle: -45,
+        zeroline: false
+      },
+
+      legend: {
+        orientation: 'h',
+        x: 0.5, xanchor: 'center',
+        y: 1.08, yanchor: 'bottom',
+        font: { color: '#aaaaaa', size: 10 },
+        bgcolor: 'rgba(0,0,0,0)'
+      },
+
+      hovermode: 'x',
+
+      // Vertical lines — span full chart via paper ref
+      shapes: [
+        { type:'line', xref:'x', yref:'paper', x0:spot, x1:spot, y0:0, y1:1,
+          line:{ color:'#FFFFFF', width:2, dash:'solid' } },
+        { type:'line', xref:'x', yref:'paper', x0:data.call_wall, x1:data.call_wall, y0:0, y1:1,
+          line:{ color:'#FFDD00', width:2, dash:'dash' } },
+        { type:'line', xref:'x', yref:'paper', x0:data.put_wall, x1:data.put_wall, y0:0, y1:1,
+          line:{ color:'#FF3300', width:2, dash:'dash' } }
+      ],
+
+      annotations: [
+        { xref:'x', yref:'paper', x:spot, y:1.01, text:'SPOT', showarrow:false,
+          font:{ color:'#FFFFFF', size:8 }, xanchor:'left' },
+        { xref:'x', yref:'paper', x:data.call_wall, y:0.97, text:'CALL WALL', showarrow:false,
+          font:{ color:'#FFDD00', size:8 }, xanchor:'left' },
+        { xref:'x', yref:'paper', x:data.put_wall, y:0.93, text:'PUT WALL', showarrow:false,
+          font:{ color:'#FF3300', size:8 }, xanchor:'left' }
+      ],
+
+      margin: { l: 45, r: 45, t: 90, b: 55 },
+      font: { color: '#aaaaaa' },
+      dragmode: 'pan'
+    };
+
+    Plotly.newPlot('mainChart', traces, layout, plotConfig);
+
+  } catch(e) {
     console.error(e);
     document.getElementById('insightTxt').innerText = 'Failed to load data. Tap refresh to retry.';
   }
