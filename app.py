@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template
 import yfinance as yf
 import pytz
+from curl_cffi import requests as curl_requests
 
 app = Flask(__name__)
 
@@ -19,7 +20,7 @@ TICKERS = {
 }
 
 _cache = {}
-CACHE_TTL = 25  # seconds, avoids hammering yfinance on rapid taps
+CACHE_TTL = 25  # seconds
 
 def cache_get(key):
     item = _cache.get(key)
@@ -31,6 +32,11 @@ def cache_set(key, value):
     _cache[key] = (time.time(), value)
 
 
+def get_session():
+    # Impersonate a real Chrome browser so Yahoo Finance doesn't block cloud server requests
+    return curl_requests.Session(impersonate="chrome110")
+
+
 # ---------- Pure python Black-Scholes (no scipy) ----------
 def norm_pdf(x):
     return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x)
@@ -40,7 +46,7 @@ def norm_cdf(x):
 
 def bs_delta_gamma(S, K, T, r, sigma, option_type):
     if T <= 0:
-        T = 0.0007  # ~6 hours, avoid div by zero on 0DTE
+        T = 0.0007
     if sigma <= 0:
         sigma = 0.0001
     d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
@@ -57,16 +63,18 @@ def get_spot_price(ticker):
     cached = cache_get(key)
     if cached is not None:
         return cached
-    t = yf.Ticker(ticker)
-    price = None
+    price = 0.0
     try:
-        price = t.fast_info["last_price"]
-    except Exception:
+        session = get_session()
+        t = yf.Ticker(ticker, session=session)
         hist = t.history(period="1d")
         if not hist.empty:
             price = float(hist["Close"].iloc[-1])
-    if price is None:
-        price = 0.0
+        else:
+            fi = t.fast_info
+            price = float(fi["last_price"])
+    except Exception as e:
+        print(f"spot price error for {ticker}: {e}")
     cache_set(key, price)
     return price
 
@@ -92,10 +100,12 @@ def api_expiries():
     if cached is not None:
         return jsonify(cached)
 
-    t = yf.Ticker(ticker)
     try:
+        session = get_session()
+        t = yf.Ticker(ticker, session=session)
         all_expiries = t.options
-    except Exception:
+    except Exception as e:
+        print(f"expiries error for {ticker}: {e}")
         return jsonify({"expiries": [], "error": "Could not fetch expiries"})
 
     today = datetime.now(IST).date()
@@ -110,7 +120,8 @@ def api_expiries():
             chain = t.option_chain(exp_str)
             oi_total = int(chain.calls["openInterest"].fillna(0).sum() +
                             chain.puts["openInterest"].fillna(0).sum())
-        except Exception:
+        except Exception as e:
+            print(f"chain error for {ticker} {exp_str}: {e}")
             oi_total = 0
         result.append({
             "dte": dte,
@@ -128,7 +139,6 @@ def api_expiries():
 @app.route("/api/gex")
 def api_gex():
     ticker = request.args.get("ticker", "SPY").upper()
-    dtes_param = request.args.get("dtes", "")
     expiries_param = request.args.get("expiries", "")
 
     if not expiries_param:
@@ -136,17 +146,22 @@ def api_gex():
 
     selected_expiries = expiries_param.split(",")
     spot = get_spot_price(ticker)
+    if spot <= 0:
+        return jsonify({"error": "Could not fetch live spot price. Try again."}), 400
+
     today = datetime.now(IST).date()
 
-    t = yf.Ticker(ticker)
-    strike_map = {}  # strike -> {gex, dex}
+    session = get_session()
+    t = yf.Ticker(ticker, session=session)
+    strike_map = {}
 
     for exp_str in selected_expiries:
         try:
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
             T = max((exp_date - today).days, 0) / 365.0
             chain = t.option_chain(exp_str)
-        except Exception:
+        except Exception as e:
+            print(f"gex chain error for {ticker} {exp_str}: {e}")
             continue
 
         for _, row in chain.calls.iterrows():
@@ -190,7 +205,6 @@ def api_gex():
     call_wall = max(strike_map.items(), key=lambda kv: kv[1]["call_gex"])[0]
     put_wall = min(strike_map.items(), key=lambda kv: kv[1]["put_gex"])[0]
 
-    # cumulative GEX for flip point (zero gamma level)
     cum = 0.0
     cum_list = []
     flip_point = strikes[0]
@@ -202,18 +216,9 @@ def api_gex():
             flip_point = k
         prev_cum = cum
 
-    # max pain: strike minimizing total option holder payout
     max_pain_strike = strikes[0]
     min_payout = None
     for candidate in strikes:
-        payout = 0.0
-        for k in strikes:
-            oi_c = strike_map[k]["call_gex"]  # proxy not exact OI, keep simple below
-        # simple approximation using intrinsic value * combined magnitude as weight
-        for k in strikes:
-            weight = abs(strike_map[k]["gex"]) + abs(strike_map[k]["dex"]) / max(spot, 1)
-            payout += max(0, candidate - k) * weight * 0  # placeholder to keep zero cost if not enough data
-        # fallback simple: distance-weighted by |gex| as proxy for OI concentration
         proxy_cost = sum(abs(strike_map[k]["gex"]) * abs(candidate - k) for k in strikes)
         if min_payout is None or proxy_cost < min_payout:
             min_payout = proxy_cost
