@@ -4,12 +4,19 @@ let expiryData = [];
 
 const layoutBase = {
   paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
-  font:{color:'#8a94a3', size:10}, margin:{l:36,r:10,t:10,b:30},
-  xaxis:{gridcolor:'rgba(255,255,255,0.05)', zeroline:false},
+  font:{color:'#8a94a3', size:10}, margin:{l:44,r:10,t:10,b:30},
+  xaxis:{gridcolor:'rgba(255,255,255,0.05)', zeroline:false, title:{text:'Strike', font:{size:9}}},
   yaxis:{gridcolor:'rgba(255,255,255,0.06)', zeroline:false},
   showlegend:false, dragmode:'pan'
 };
-const plotConfig = { displayModeBar:false, responsive:true, scrollZoom:true };
+
+const plotConfig = {
+  displayModeBar: true,
+  displaylogo: false,
+  responsive: true,
+  scrollZoom: true,
+  modeBarButtons: [['zoomIn2d','zoomOut2d','autoScale2d','resetScale2d','pan2d']]
+};
 
 function fmtBig(n) {
   const abs = Math.abs(n);
@@ -19,6 +26,17 @@ function fmtBig(n) {
   else if (abs >= 1e3) s = (n/1e3).toFixed(2) + 'K';
   else s = n.toFixed(2);
   return (n >= 0 ? '+' : '') + s;
+}
+
+// Build a layout with x-axis initially zoomed near spot price, but full data still available on zoom-out
+function rangeLayout(spot, extra) {
+  const lo = spot * 0.85;
+  const hi = spot * 1.15;
+  return {
+    ...layoutBase,
+    xaxis: { ...layoutBase.xaxis, range: [lo, hi] },
+    ...extra
+  };
 }
 
 async function loadQuotes() {
@@ -46,7 +64,7 @@ async function loadExpiries() {
     selectedExpiries = [];
     expiryData.forEach((item, idx) => {
       const row = document.createElement('div');
-      const isDefault = idx < 3; // auto-select first 3 nearest expiries
+      const isDefault = idx < 3;
       row.className = 'dte-row' + (isDefault ? ' checked' : '');
       row.dataset.expiry = item.expiry;
       row.innerHTML = `<div class="dte-left"><div class="checkbox">${isDefault ? '✓' : ''}</div>
@@ -112,27 +130,29 @@ async function loadGex() {
     const colors = arr => arr.map(v => v >= 0 ? '#00ffb2' : '#ff4d6d');
     const spot = data.spot;
 
-    Plotly.newPlot('gexChart', [{ x:data.strikes, y:data.gex, type:'bar', marker:{color:colors(data.gex)} }], {
-      ...layoutBase,
-      shapes:[
-        {type:'line', x0:spot, x1:spot, y0:0, y1:1, yref:'paper', line:{color:'#ffffff', width:1.5, dash:'dot'}},
-        {type:'line', x0:data.call_wall, x1:data.call_wall, y0:0, y1:1, yref:'paper', line:{color:'#00ffb2', width:1, dash:'dash'}},
-        {type:'line', x0:data.put_wall, x1:data.put_wall, y0:0, y1:1, yref:'paper', line:{color:'#ff4d6d', width:1, dash:'dash'}}
-      ]
-    }, plotConfig);
+    Plotly.newPlot('gexChart', [{ x:data.strikes, y:data.gex, type:'bar', marker:{color:colors(data.gex)}, width: (spot*0.006) }],
+      rangeLayout(spot, {
+        shapes:[
+          {type:'line', x0:spot, x1:spot, y0:0, y1:1, yref:'paper', line:{color:'#ffffff', width:1.5, dash:'dot'}},
+          {type:'line', x0:data.call_wall, x1:data.call_wall, y0:0, y1:1, yref:'paper', line:{color:'#00ffb2', width:1, dash:'dash'}},
+          {type:'line', x0:data.put_wall, x1:data.put_wall, y0:0, y1:1, yref:'paper', line:{color:'#ff4d6d', width:1, dash:'dash'}}
+        ]
+      }), plotConfig);
 
-    Plotly.newPlot('dexChart', [{ x:data.strikes, y:data.dex, type:'bar', marker:{color:colors(data.dex)} }], {
-      ...layoutBase,
-      shapes:[{type:'line', x0:spot, x1:spot, y0:0, y1:1, yref:'paper', line:{color:'#ffffff', width:1.5, dash:'dot'}}]
-    }, plotConfig);
+    Plotly.newPlot('dexChart', [{ x:data.strikes, y:data.dex, type:'bar', marker:{color:colors(data.dex)}, width: (spot*0.006) }],
+      rangeLayout(spot, {
+        shapes:[{type:'line', x0:spot, x1:spot, y0:0, y1:1, yref:'paper', line:{color:'#ffffff', width:1.5, dash:'dot'}}]
+      }), plotConfig);
 
     const cumGexX = data.cumulative_gex.map(p => p.strike);
     const cumGexY = data.cumulative_gex.map(p => p.value);
-    Plotly.newPlot('cumGexChart', [{ x:cumGexX, y:cumGexY, type:'scatter', mode:'lines', line:{color:'#00ffb2', width:2}, fill:'tozeroy', fillcolor:'rgba(0,255,178,0.08)' }], layoutBase, plotConfig);
+    Plotly.newPlot('cumGexChart', [{ x:cumGexX, y:cumGexY, type:'scatter', mode:'lines', line:{color:'#00ffb2', width:2}, fill:'tozeroy', fillcolor:'rgba(0,255,178,0.08)' }],
+      rangeLayout(spot), plotConfig);
 
     const cumDexX = data.cumulative_dex.map(p => p.strike);
     const cumDexY = data.cumulative_dex.map(p => p.value);
-    Plotly.newPlot('cumDexChart', [{ x:cumDexX, y:cumDexY, type:'scatter', mode:'lines', line:{color:'#7c5cff', width:2}, fill:'tozeroy', fillcolor:'rgba(124,92,255,0.08)' }], layoutBase, plotConfig);
+    Plotly.newPlot('cumDexChart', [{ x:cumDexX, y:cumDexY, type:'scatter', mode:'lines', line:{color:'#7c5cff', width:2}, fill:'tozeroy', fillcolor:'rgba(124,92,255,0.08)' }],
+      rangeLayout(spot), plotConfig);
 
   } catch (e) {
     console.error(e);
@@ -161,7 +181,6 @@ document.querySelectorAll('.ticker-card').forEach(card => {
   });
 });
 
-// initial load
 loadQuotes();
 loadExpiries().then(loadGex);
 setInterval(loadQuotes, 30000);
